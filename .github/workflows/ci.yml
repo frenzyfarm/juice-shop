@@ -1,28 +1,51 @@
-name: CI/CD Security Pipeline (Custom Build)
+name: CI/CD Security Pipeline (Juice Shop)
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
+  # 1. Analyse Statique (SAST)
+  sast-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Bandit
+        run: pip install bandit
+        
+      - name: Run Bandit Scan
+        # On génère un rapport HTML
+        run: bandit -r . -f html -o bandit-report.html || true
+        
+      - name: Upload Bandit Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.html
+
+  # 2. Analyse Dynamique (DAST)
   dast-scan:
     runs-on: ubuntu-latest
+    # On attend que le SAST soit fini (optionnel, pour l'ordre logique)
+    needs: sast-scan 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. On construit l'image à partir du Dockerfile de TON repo
-      - name: Build local image
-        run: docker build -t my-juice-shop .
-
-      # 2. On lance TON image (celle qui contient tes modifs)
-      - name: Launch local Juice Shop
+      - name: Launch Juice Shop (Docker)
         run: |
-          docker run -d --name juice-shop -p 3000:3000 my-juice-shop
-          sleep 30 # Juice Shop est lourd, on lui laisse du temps
+          docker run -d --name juice-shop -p 3000:3000 bkimminich/juice-shop
+          # On laisse le temps au serveur Node.js de démarrer
+          sleep 20 
 
-      # 3. ZAP attaque l'instance locale que l'on vient de builder
-      - name: ZAP Baseline Scan
+      - name: ZAP Baseline Scan (DAST)
+        # On utilise l'action officielle de ZAP pour GitHub
         uses: zaproxy/action-baseline@v0.12.0
         with:
           target: 'http://localhost:3000'
           token: ${{ secrets.GITHUB_TOKEN }}
-          fail_action: false
+          fail_action: false # Pour ne pas bloquer si des failles sont trouvées
+          allow_issue_writing: false # On veut juste le rapport, pas créer des issues GitHub
