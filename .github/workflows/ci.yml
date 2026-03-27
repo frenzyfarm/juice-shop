@@ -33,7 +33,7 @@ jobs:
           path: bandit-report.html
 
 
-  # 2. Secrets Scan - Version qui détecte TOUS les secrets (sans filtrage)
+  # 2. Secrets Scan - Version qui scanne TOUT (y compris les mots de passe)
   secret-scan:
     runs-on: ubuntu-latest
 
@@ -43,37 +43,48 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Run TruffleHog with entropy detection (catch all secrets)
+      - name: Run TruffleHog - Scan for ALL secrets and passwords
         run: |
-          # Version qui détecte les secrets avec entropie et sans vérification
-          # pour capturer TOUS les secrets potentiels
+          # Scan complet sans filtrage pour détecter TOUS les secrets potentiels
           docker run --rm -v "$(pwd):/repo" trufflesecurity/trufflehog:latest \
             filesystem /repo \
             --json \
-            --entropy \
             --no-verification \
-            > trufflehog-results.json
+            --no-update \
+            > trufflehog-results.json 2>&1
           
           # Afficher un résumé des résultats
           echo "=== TruffleHog Scan Summary ==="
           if [ -s trufflehog-results.json ]; then
-            echo "✅ Secrets found! Total findings: $(wc -l < trufflehog-results.json)"
+            # Compter le nombre de lignes (un secret par ligne)
+            FINDINGS=$(grep -c '^{' trufflehog-results.json 2>/dev/null || echo "0")
+            echo "✅ Secrets/passwords found: $FINDINGS"
             echo ""
             echo "Files with potential secrets:"
-            cat trufflehog-results.json | grep -o '"path":"[^"]*"' | sort | uniq -c
+            grep -o '"path":"[^"]*"' trufflehog-results.json 2>/dev/null | sort | uniq -c || echo "No paths found"
           else
             echo "⚠️ No secrets detected by TruffleHog"
-            echo "Creating a placeholder file for artifact..."
-            echo '{"message": "No secrets found with entropy detection"}' > trufflehog-results.json
+            echo '{"message": "No secrets found in the repository"}' > trufflehog-results.json
           fi
         continue-on-error: true
 
-      - name: Display sample of detected secrets (for debugging)
+      - name: Display sample of detected secrets
         if: always()
         run: |
-          if [ -s trufflehog-results.json ] && [ "$(wc -l < trufflehog-results.json)" -gt 0 ]; then
-            echo "=== First 3 detected secrets (preview) ==="
-            head -3 trufflehog-results.json | jq -r '"Detector: \(.DetectorName) | File: \(.SourceMetadata.Data.filesystem.path) | Value: \(.Raw[0:50])"' 2>/dev/null || head -3 trufflehog-results.json
+          if [ -f trufflehog-results.json ] && [ -s trufflehog-results.json ]; then
+            echo "=== First 5 detected secrets (preview) ==="
+            head -5 trufflehog-results.json | python3 -c "
+import sys, json
+for line in sys.stdin:
+    try:
+        data = json.loads(line.strip())
+        detector = data.get('DetectorName', 'Unknown')
+        path = data.get('SourceMetadata', {}).get('Data', {}).get('filesystem', {}).get('path', 'N/A')
+        secret = data.get('Raw', '')[:60]
+        print(f'Detector: {detector} | File: {path} | Secret: {secret}')
+    except:
+        pass
+" 2>/dev/null || echo "Unable to parse results"
           fi
 
       - name: Upload TruffleHog Results
@@ -88,7 +99,6 @@ jobs:
   dast-scan:
     runs-on: ubuntu-latest
     needs: [sast-scan, secret-scan]
-    # 🔥 Important: Force le succès du job même si ZAP retourne des warnings
     continue-on-error: true
 
     steps:
@@ -128,9 +138,7 @@ jobs:
           fi
           
       - name: Run ZAP Baseline Scan
-        id: zap_scan
         run: |
-          # Exécuter ZAP et capturer le code de sortie
           docker run --rm \
             --user root \
             --network host \
@@ -141,12 +149,6 @@ jobs:
             -J report_json.json \
             -w report_md.md \
             -r report_html.html || true
-          
-          # ZAP retourne :
-          # 0 = succès (pas de problèmes)
-          # 1 = erreur d'exécution
-          # 2 = warnings trouvés
-          # 3 = erreur technique
           
           echo "ZAP scan completed (warnings are acceptable)"
           
