@@ -1,0 +1,267 @@
+name: ALTERNATIVE - CI/CD Security Pipeline (Juice Shop)
+
+on:
+  push:
+  pull_request:
+
+jobs:
+
+  # 1. SAST - Analyse statique
+  sast-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Run Bandit Scan
+        run: bandit -r . -f html -o bandit-report.html
+        continue-on-error: true
+
+      - name: Upload Bandit Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report-${{ github.run_number }}
+          path: bandit-report.html
+
+
+  # 2. Secrets Scan - FULL SCAN avec export HTML et JSON
+  secret-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run TruffleHog Full Scan with JSON output
+        run: |
+          docker run --rm -v "$(pwd):/repo" trufflesecurity/trufflehog:latest \
+            filesystem /repo --only-verified --json > trufflehog-results.json
+        continue-on-error: true
+
+      - name: Convert TruffleHog JSON to HTML
+        run: |
+          cat > convert-to-html.py << 'EOF'
+          import json
+          import sys
+          
+          def json_to_html(json_file, html_file):
+              try:
+                  with open(json_file, 'r') as f:
+                      results = [json.loads(line) for line in f if line.strip()]
+              except FileNotFoundError:
+                  print("No secrets found or file doesn't exist")
+                  # Create empty HTML report
+                  with open(html_file, 'w') as f:
+                      f.write("""<!DOCTYPE html>
+                      <html>
+                      <head><title>TruffleHog Results</title></head>
+                      <body>
+                      <h1>TruffleHog Security Scan Results</h1>
+                      <p>No secrets were found in the repository.</p>
+                      </body>
+                      </html>""")
+                  return
+              
+              html_content = """
+              <!DOCTYPE html>
+              <html>
+              <head>
+                  <title>TruffleHog Security Scan Results</title>
+                  <style>
+                      body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+                      h1 { color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }
+                      .summary { background-color: #fff; padding: 15px; border-radius: 5px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+                      .severity-CRITICAL { background-color: #ff4444; color: white; }
+                      .severity-HIGH { background-color: #ff8800; color: white; }
+                      .severity-MEDIUM { background-color: #ffbb33; color: black; }
+                      .severity-LOW { background-color: #00C851; color: white; }
+                      table { width: 100%; border-collapse: collapse; background-color: #fff; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+                      th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+                      th { background-color: #4CAF50; color: white; }
+                      tr:hover { background-color: #f5f5f5; }
+                      .detected { font-family: monospace; background-color: #f8f8f8; padding: 5px; border-radius: 3px; }
+                      .timestamp { color: #666; font-size: 0.9em; }
+                  </style>
+              </head>
+              <body>
+                  <h1>🔍 TruffleHog Security Scan Results</h1>
+                  <div class="summary">
+                      <h2>Summary</h2>
+                      <p><strong>Total Secrets Found:</strong> {total}</p>
+                      <p><strong>Scan Date:</strong> {date}</p>
+                  </div>
+                  <h2>Detailed Findings</h2>
+                  <table>
+                      <thead>
+                          <tr>
+                              <th>Severity</th>
+                              <th>Detector</th>
+                              <th>File Path</th>
+                              <th>Line</th>
+                              <th>Secret</th>
+                              <th>Timestamp</th>
+                          </tr>
+                      </thead>
+                      <tbody>
+              """
+              
+              total = 0
+              import datetime
+              scan_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+              
+              for result in results:
+                  total += 1
+                  severity = result.get('Severity', 'MEDIUM')
+                  detector = result.get('DetectorName', 'Unknown')
+                  path = result.get('SourceMetadata', {}).get('Data', {}).get('filesystem', {}).get('path', 'N/A')
+                  line = result.get('SourceMetadata', {}).get('Data', {}).get('filesystem', {}).get('line', 'N/A')
+                  secret = result.get('Raw', '')[:100]  # Truncate long secrets
+                  timestamp = result.get('Timestamp', 'N/A')
+                  
+                  html_content += f"""
+                          <tr>
+                              <td class="severity-{severity.upper()}">{severity}</td>
+                              <td>{detector}</td>
+                              <td>{path}</td>
+                              <td>{line}</td>
+                              <td class="detected">{secret}</td>
+                              <td class="timestamp">{timestamp}</td>
+                          </tr>
+                  """
+              
+              html_content += f"""
+                      </tbody>
+                  </table>
+                  <br>
+                  <div class="summary">
+                      <p><em>Generated by TruffleHog Security Scanner</em></p>
+                  </div>
+              </body>
+              </html>
+              """
+              
+              html_content = html_content.format(total=total, date=scan_date)
+              
+              with open(html_file, 'w') as f:
+                  f.write(html_content)
+              
+              print(f"HTML report generated with {total} findings")
+          
+          if __name__ == "__main__":
+              json_to_html('trufflehog-results.json', 'trufflehog-results.html')
+          EOF
+          
+          python3 convert-to-html.py
+
+      - name: Upload TruffleHog Results (JSON)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trufflehog-json-${{ github.run_number }}
+          path: trufflehog-results.json
+
+      - name: Upload TruffleHog Results (HTML)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trufflehog-html-${{ github.run_number }}
+          path: trufflehog-results.html
+
+
+  # 3. DAST - Version avec succès forcé même en cas de warnings
+  dast-scan:
+    runs-on: ubuntu-latest
+    needs: [sast-scan, secret-scan]
+    continue-on-error: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create reports directory with proper permissions
+        run: |
+          mkdir -p zap-reports
+          chmod 777 zap-reports
+
+      - name: Start Juice Shop with host network
+        run: |
+          docker run -d \
+            --name juice-shop \
+            --network host \
+            bkimminich/juice-shop
+
+      - name: Wait for Juice Shop to be ready
+        run: |
+          echo "Waiting for Juice Shop to be ready..."
+          for i in {1..30}; do
+            if curl -s http://localhost:3000 > /dev/null; then
+              echo "Juice Shop is ready!"
+              break
+            fi
+            echo "Attempt $i/30: Juice Shop not ready yet, waiting..."
+            sleep 5
+          done
+          
+      - name: Verify Juice Shop is running
+        run: |
+          if ! curl -s http://localhost:3000 > /dev/null; then
+            echo "Error: Juice Shop failed to start"
+            docker logs juice-shop
+            exit 1
+          fi
+
+      - name: Run ZAP Baseline Scan
+        run: |
+          docker run --rm \
+            --user root \
+            --network host \
+            -v $(pwd)/zap-reports:/zap/wrk \
+            -t ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t http://localhost:3000 \
+            -J report_json.json \
+            -w report_md.md \
+            -r report_html.html || true
+
+      - name: List generated files
+        if: always()
+        run: |
+          echo "=== Generated files ==="
+          ls -lah zap-reports/
+          echo "======================"
+          
+      - name: Display report summary
+        if: always()
+        run: |
+          if [ -f zap-reports/report_md.md ]; then
+            echo "=== ZAP Report Summary ==="
+            head -50 zap-reports/report_md.md
+            echo "=========================="
+          fi
+
+      - name: Upload ZAP Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-security-report-${{ github.run_number }}
+          path: |
+            zap-reports/report_html.html
+            zap-reports/report_md.md
+            zap-reports/report_json.json
+
+      - name: Stop and remove Juice Shop
+        if: always()
+        run: |
+          docker stop juice-shop
+          docker rm juice-shop
