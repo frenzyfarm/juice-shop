@@ -2,9 +2,7 @@ name: CI/CD Security Pipeline (Juice Shop)
 
 on:
   push:
-    branches: [ main, bapt ]
   pull_request:
-    branches: [ main, bapt ]
 
 jobs:
   # 1. Analyse Statique (SAST)
