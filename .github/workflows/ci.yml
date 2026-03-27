@@ -1,19 +1,29 @@
 name: CI/CD Security Pipeline (Juice Shop)
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [ main, bapt ]
+  pull_request:
+    branches: [ main, bapt ]
 
 jobs:
   # 1. Analyse Statique (SAST)
   sast-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
       
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
       - name: Install Bandit
         run: pip install bandit
         
       - name: Run Bandit Scan
-        # On génère un rapport HTML
+        # On génère un rapport HTML et on force le succès avec || true
         run: bandit -r . -f html -o bandit-report.html || true
         
       - name: Upload Bandit Artifact
@@ -25,23 +35,27 @@ jobs:
   # 2. Analyse Dynamique (DAST)
   dast-scan:
     runs-on: ubuntu-latest
-    # On attend que le SAST soit fini (optionnel, pour l'ordre logique)
     needs: sast-scan 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Correction Permission Denied : Donne les droits à Docker sur le workspace
+      - name: Prepare Workspace for ZAP
+        run: chmod -R 777 ${{ github.workspace }}
+
       - name: Launch Juice Shop (Docker)
         run: |
           docker run -d --name juice-shop -p 3000:3000 bkimminich/juice-shop
-          # On laisse le temps au serveur Node.js de démarrer
-          sleep 20 
+          # On laisse 40s pour être sûr que l'app répond
+          sleep 40 
 
       - name: ZAP Baseline Scan (DAST)
-        # On utilise l'action officielle de ZAP pour GitHub
         uses: zaproxy/action-baseline@v0.12.0
         with:
           target: 'http://localhost:3000'
           token: ${{ secrets.GITHUB_TOKEN }}
-          fail_action: false # Pour ne pas bloquer si des failles sont trouvées
-          allow_issue_writing: false # On veut juste le rapport, pas créer des issues GitHub
+          # Correction Bad Request : On force un nom d'artifact simple
+          artifact_name: 'zap-report'
+          fail_action: false
+          allow_issue_writing: false
