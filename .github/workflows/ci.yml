@@ -54,6 +54,6 @@ jobs:
           target: 'http://localhost:3000'
           token: ${{ secrets.GITHUB_TOKEN }}
           # Correction Bad Request : On force un nom d'artifact simple
-          artifact_name: 'zap-report'
+          artifact_name: 'zap_report'
           fail_action: false
           allow_issue_writing: false
