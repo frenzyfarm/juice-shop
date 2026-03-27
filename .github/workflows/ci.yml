@@ -45,47 +45,22 @@ jobs:
 
       - name: Run TruffleHog - Scan for ALL secrets and passwords
         run: |
-          # Scan complet sans filtrage pour détecter TOUS les secrets potentiels
           docker run --rm -v "$(pwd):/repo" trufflesecurity/trufflehog:latest \
             filesystem /repo \
             --json \
             --no-verification \
             --no-update \
-            > trufflehog-results.json 2>&1
+            > trufflehog-results.json
           
-          # Afficher un résumé des résultats
           echo "=== TruffleHog Scan Summary ==="
           if [ -s trufflehog-results.json ]; then
-            # Compter le nombre de lignes (un secret par ligne)
             FINDINGS=$(grep -c '^{' trufflehog-results.json 2>/dev/null || echo "0")
             echo "✅ Secrets/passwords found: $FINDINGS"
-            echo ""
-            echo "Files with potential secrets:"
-            grep -o '"path":"[^"]*"' trufflehog-results.json 2>/dev/null | sort | uniq -c || echo "No paths found"
           else
-            echo "⚠️ No secrets detected by TruffleHog"
-            echo '{"message": "No secrets found in the repository"}' > trufflehog-results.json
+            echo "⚠️ No secrets detected"
+            echo '{"message": "No secrets found"}' > trufflehog-results.json
           fi
         continue-on-error: true
-
-      - name: Display sample of detected secrets
-        if: always()
-        run: |
-          if [ -f trufflehog-results.json ] && [ -s trufflehog-results.json ]; then
-            echo "=== First 5 detected secrets (preview) ==="
-            head -5 trufflehog-results.json | python3 -c "
-import sys, json
-for line in sys.stdin:
-    try:
-        data = json.loads(line.strip())
-        detector = data.get('DetectorName', 'Unknown')
-        path = data.get('SourceMetadata', {}).get('Data', {}).get('filesystem', {}).get('path', 'N/A')
-        secret = data.get('Raw', '')[:60]
-        print(f'Detector: {detector} | File: {path} | Secret: {secret}')
-    except:
-        pass
-" 2>/dev/null || echo "Unable to parse results"
-          fi
 
       - name: Upload TruffleHog Results
         if: always()
@@ -109,14 +84,14 @@ for line in sys.stdin:
         run: |
           mkdir -p zap-reports
           chmod 777 zap-reports
-          
+
       - name: Start Juice Shop with host network
         run: |
           docker run -d \
             --name juice-shop \
             --network host \
             bkimminich/juice-shop
-            
+
       - name: Wait for Juice Shop to be ready
         run: |
           echo "Waiting for Juice Shop to be ready..."
@@ -136,7 +111,7 @@ for line in sys.stdin:
             docker logs juice-shop
             exit 1
           fi
-          
+
       - name: Run ZAP Baseline Scan
         run: |
           docker run --rm \
@@ -151,7 +126,7 @@ for line in sys.stdin:
             -r report_html.html || true
           
           echo "ZAP scan completed (warnings are acceptable)"
-          
+
       - name: List generated files
         if: always()
         run: |
@@ -167,7 +142,7 @@ for line in sys.stdin:
             head -50 zap-reports/report_md.md
             echo "=========================="
           fi
-          
+
       - name: Upload ZAP Reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -177,7 +152,7 @@ for line in sys.stdin:
             zap-reports/report_html.html
             zap-reports/report_md.md
             zap-reports/report_json.json
-            
+
       - name: Stop and remove Juice Shop
         if: always()
         run: |
