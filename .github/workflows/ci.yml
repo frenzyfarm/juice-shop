@@ -1,17 +1,18 @@
-name: CI/CD Security Pipeline (Juice Shop)
+name: CI/CD Security Pipeline (Juice Shop - Optimized)
 
 on:
   push:
   pull_request:
 
 jobs:
-  # 1. Analyse Statique (SAST)
+
   sast-scan:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -19,41 +20,101 @@ jobs:
 
       - name: Install Bandit
         run: pip install bandit
-        
+
       - name: Run Bandit Scan
-        # On génère un rapport HTML et on force le succès avec || true
-        run: bandit -r . -f html -o bandit-report.html || true
-        
+        run: bandit -r . -f html -o bandit-report.html
+        continue-on-error: true
+
       - name: Upload Bandit Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bandit-report
+          name: bandit-report-${{ github.run_number }}
           path: bandit-report.html
 
-  # 2. Analyse Dynamique (DAST)
+      - name: Add Bandit summary
+        if: always()
+        run: |
+          echo "## Bandit Scan Report" >> $GITHUB_STEP_SUMMARY
+          echo "Artifact disponible dans les résultats du job." >> $GITHUB_STEP_SUMMARY
+
+
+  secret-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified
+        continue-on-error: true
+
+      - name: Add TruffleHog summary
+        if: always()
+        run: |
+          echo "## TruffleHog Scan" >> $GITHUB_STEP_SUMMARY
+          echo "Scan terminé (mode non bloquant)." >> $GITHUB_STEP_SUMMARY
+
+
   dast-scan:
     runs-on: ubuntu-latest
-    needs: sast-scan 
+    needs: [sast-scan, secret-scan]
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Correction Permission Denied : Donne les droits à Docker sur le workspace
-      - name: Prepare Workspace for ZAP
-        run: chmod -R 777 ${{ github.workspace }}
-
-      - name: Launch Juice Shop (Docker)
+      - name: Start Juice Shop (Docker)
         run: |
           docker run -d --name juice-shop -p 3000:3000 bkimminich/juice-shop
-          # On laisse 40s pour être sûr que l'app répond
-          sleep 40 
 
-      - name: ZAP Baseline Scan (DAST)
+      - name: Wait for Juice Shop to be ready
+        run: |
+          until curl -s http://localhost:3000 > /dev/null; do
+            echo "Waiting for Juice Shop..."
+            sleep 5
+          done
+
+      - name: Run ZAP Baseline Scan
         uses: zaproxy/action-baseline@v0.12.0
         with:
           target: 'http://localhost:3000'
           token: ${{ secrets.GITHUB_TOKEN }}
-          # Correction Bad Request : On force un nom d'artifact simple
-          artifact_name: 'zap_report'
+          artifact_name: ''
           fail_action: false
           allow_issue_writing: false
+
+      - name: Debug - list generated files
+        if: always()
+        run: ls -lah
+
+      - name: Upload ZAP Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-security-report-${{ github.run_number }}
+          path: |
+            report_html.html
+            report_md.md
+            report_json.json
+
+      - name: Add ZAP summary
+        if: always()
+        run: |
+          echo "## ZAP Security Scan" >> $GITHUB_STEP_SUMMARY
+          if [ -f report_md.md ]; then
+            cat report_md.md >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Rapport ZAP non trouvé." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Stop Juice Shop
+        if: always()
+        run: docker stop juice-shop
