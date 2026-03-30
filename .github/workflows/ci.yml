@@ -20,7 +20,7 @@ jobs:
         run: bandit -r . -f html -o bandit-report.html
         continue-on-error: true
       - name: Upload Bandit Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bandit-report-${{ github.run_number }}
           path: bandit-report.html
@@ -43,7 +43,7 @@ jobs:
         continue-on-error: true
       - name: Upload TruffleHog Results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: trufflehog-results-${{ github.run_number }}
           path: trufflehog-results.json
@@ -87,7 +87,7 @@ jobs:
             -r report_html.html || true
       - name: Upload ZAP Reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zap-security-report-${{ github.run_number }}
           path: |
